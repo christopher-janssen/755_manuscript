@@ -1,0 +1,537 @@
+---
+title: "AI Sentiment Survey: Data Preparation and Cleaning"
+author: "Data Analysis Team"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+```{r setup}
+#| label: load-packages
+#| include: false
+
+# Load required packages
+library(tidyverse)
+library(janitor)
+library(skimr)
+library(naniar)
+library(lubridate)
+library(knitr)
+library(kableExtra, exclude = "group_rows")
+library(visdat)
+```
+
+# Introduction
+
+This document details the data preparation and cleaning process for the AI Sentiment Survey dataset. The survey contains responses from 47 participants regarding their attitudes, experiences, and concerns about artificial intelligence.
+
+## Dataset Overview
+
+The raw dataset contains:
+
+- **47 observations** (survey responses)
+- **44 variables** including:
+  - Survey questions (Q1-Q18)
+  - Metadata (timestamps, duration, location)
+  - Demographics (age, sex, country, employment)
+  - Data quality indicators (attention checks)
+
+# Data Import and Initial Exploration
+
+```{r import-data}
+#| label: import-data
+#| code-summary: "Import and initial inspection"
+
+# Import the data
+df_raw <- read_csv(here::here("data/datafile.csv"), 
+                   show_col_types = FALSE,
+                   locale = locale(encoding = "UTF-8"))
+
+# Display basic information
+cat("Dataset dimensions:", nrow(df_raw), "rows x", ncol(df_raw), "columns\n")
+cat("Column names:\n")
+names(df_raw) %>% head(20) %>% print()
+```
+
+## Initial Data Quality Assessment
+
+```{r data-quality}
+#| label: initial-quality
+#| code-summary: "Data quality overview"
+
+# Use skimr for comprehensive overview
+skimr::skim_without_charts(df_raw)
+```
+
+# Data Cleaning Process
+
+## Step 1: Clean Column Names
+
+```{r clean-names}
+#| label: clean-column-names
+
+# Clean column names using janitor
+df_clean <- df_raw %>% 
+  clean_names() %>% 
+  # Rename some columns for clarity
+  rename(
+    participant_id = q1,
+    ai_familiarity = q2,
+    ai_tools_used = q3,
+    ai_usage_frequency = q4,
+    ai_development_support = q5,
+    ai_workplace_approval = q6,
+    ai_overall_sentiment = q7,
+    ai_recommend = q8,
+    ai_benefits_outweigh_risks = q9,
+    ai_decision_approval = q10,
+    ai_comfort_healthcare = q11_1,
+    ai_comfort_finance = q11_2,
+    ai_comfort_criminal_justice = q11_3,
+    ai_comfort_hiring = q11_4,
+    ai_comfort_education = q11_5,
+    ai_trust = q12,
+    ai_concerns = q13,
+    ai_replaces_jobs = q14,
+    ai_regulation_importance = q16,
+    ai_regulation_preference = q17,
+    ai_future_role = q18,
+    submission_time = time_taken
+  )
+
+# Show the new column names
+names(df_clean) %>% head(20) %>% print()
+```
+
+## Step 2: Handle Date and Time Variables
+
+```{r datetime-processing}
+#| label: process-datetime
+
+df_clean <- df_clean %>% 
+  mutate(
+    # Parse datetime columns
+    start_date = ymd_hms(start_date),
+    end_date = ymd_hms(end_date),
+    
+    # Calculate derived time variables
+    survey_date = as_date(start_date),
+    survey_hour = hour(start_date),
+    survey_weekday = wday(start_date, label = TRUE),
+    
+    # Verify duration calculation
+    calculated_duration = as.numeric(difftime(end_date, start_date, units = "secs")),
+    duration_minutes = duration_in_seconds / 60
+  )
+
+# Check duration consistency
+df_clean %>% 
+  select(duration_in_seconds, calculated_duration, duration_minutes) %>% 
+  summary()
+```
+
+## Step 3: Process Demographic Variables
+
+```{r demographic-cleaning}
+#| label: clean-demographics
+
+# First, examine the current state of demographic variables
+df_clean %>% 
+  count(age) %>% 
+  arrange(desc(n))
+
+df_clean %>% 
+  count(sex) %>% 
+  arrange(desc(n))
+
+# Clean demographic variables
+df_clean <- df_clean %>% 
+  mutate(
+    # Handle age
+    age_numeric = case_when(
+      age %in% c("CONSENT_REVOKED", "NA", "DATA_EXPIRED") ~ NA_real_,
+      TRUE ~ as.numeric(age)
+    ),
+    
+    # Create age groups
+    age_group = case_when(
+      age_numeric <= 25 ~ "18-25",
+      age_numeric <= 35 ~ "26-35",
+      age_numeric <= 45 ~ "36-45",
+      age_numeric <= 55 ~ "46-55",
+      age_numeric > 55 ~ "56+",
+      TRUE ~ NA_character_
+    ),
+    
+    # Clean sex variable
+    sex_clean = case_when(
+      sex %in% c("Male", "Female") ~ sex,
+      TRUE ~ NA_character_
+    ),
+    
+    # Clean employment status
+    employment_clean = case_when(
+      employment_status == "DATA_EXPIRED" ~ NA_character_,
+      employment_status == "CONSENT_REVOKED" ~ NA_character_,
+      employment_status == "Not in paid work (e.g. homemaker', 'retired or disabled)" ~ "Not in paid work",
+      TRUE ~ employment_status
+    ),
+    
+    # Clean student status
+    student_clean = case_when(
+      student_status %in% c("Yes", "No") ~ student_status,
+      TRUE ~ NA_character_
+    )
+  )
+
+# Verify demographic cleaning
+df_clean %>% 
+  select(age_group, sex_clean, employment_clean, student_clean) %>% 
+  summary()
+```
+
+## Step 4: Convert Ordinal Variables to Factors
+
+```{r ordinal-factors}
+#| label: create-ordinal-factors
+
+# Define factor levels for ordinal variables
+familiarity_levels <- c("Not at all familiar", "Slightly familiar", 
+                        "Moderately familiar", "Very familiar", "Extremely familiar")
+
+frequency_levels <- c("Never", "Rarely", "Monthly", "Weekly", "Daily")
+
+agreement_levels <- c("Strongly disagree", "Somewhat disagree", "Neither agree nor disagree",
+                      "Somewhat agree", "Strongly agree")
+
+approval_levels <- c("Strongly disapprove", "Somewhat disapprove", "Neutral",
+                     "Somewhat approve", "Strongly approve")
+
+sentiment_levels <- c("Very negative", "Somewhat negative", "Neutral",
+                      "Somewhat positive", "Very positive")
+
+recommend_levels <- c("Definitely not", "Probably not", "Unsure",
+                      "Probably yes", "Definitely yes")
+
+trust_levels <- c("No trust at all", "Limited trust", "Moderate trust",
+                  "High trust", "Complete trust")
+
+comfort_levels <- c("Very uncomfortable", "Uncomfortable", "Neutral",
+                    "Comfortable", "Very comfortable")
+
+importance_levels <- c("Not at all important", "Slightly important",
+                       "Moderately important", "Very important", "Extremely important")
+
+# Convert to ordered factors
+df_clean <- df_clean %>% 
+  mutate(
+    # Main sentiment variables
+    ai_familiarity_factor = factor(ai_familiarity, levels = familiarity_levels, ordered = TRUE),
+    ai_usage_frequency_factor = factor(ai_usage_frequency, levels = frequency_levels, ordered = TRUE),
+    ai_development_support_factor = factor(ai_development_support, 
+                                          levels = str_replace(agreement_levels, "agree", "support"), 
+                                          ordered = TRUE),
+    ai_workplace_approval_factor = factor(ai_workplace_approval, levels = approval_levels, ordered = TRUE),
+    ai_overall_sentiment_factor = factor(ai_overall_sentiment, levels = sentiment_levels, ordered = TRUE),
+    ai_recommend_factor = factor(ai_recommend, levels = recommend_levels, ordered = TRUE),
+    ai_decision_approval_factor = factor(ai_decision_approval, levels = approval_levels, ordered = TRUE),
+    ai_trust_factor = factor(ai_trust, levels = trust_levels, ordered = TRUE),
+    ai_regulation_importance_factor = factor(ai_regulation_importance, levels = importance_levels, ordered = TRUE),
+    
+    # Comfort variables
+    ai_comfort_healthcare_factor = factor(ai_comfort_healthcare, levels = comfort_levels, ordered = TRUE),
+    ai_comfort_finance_factor = factor(ai_comfort_finance, levels = comfort_levels, ordered = TRUE),
+    ai_comfort_criminal_justice_factor = factor(ai_comfort_criminal_justice, levels = comfort_levels, ordered = TRUE),
+    ai_comfort_hiring_factor = factor(ai_comfort_hiring, levels = comfort_levels, ordered = TRUE),
+    ai_comfort_education_factor = factor(ai_comfort_education, levels = comfort_levels, ordered = TRUE)
+  )
+```
+
+## Step 5: Create Numeric Scales
+
+```{r numeric-scales}
+#| label: create-numeric-scales
+
+# Create numeric versions of ordinal variables for analysis
+df_clean <- df_clean %>% 
+  mutate(
+    # Convert ordered factors to numeric (1-5 scale)
+    ai_familiarity_num = as.numeric(ai_familiarity_factor),
+    ai_usage_frequency_num = as.numeric(ai_usage_frequency_factor),
+    ai_development_support_num = as.numeric(ai_development_support_factor),
+    ai_workplace_approval_num = as.numeric(ai_workplace_approval_factor),
+    ai_overall_sentiment_num = as.numeric(ai_overall_sentiment_factor),
+    ai_recommend_num = as.numeric(ai_recommend_factor),
+    ai_decision_approval_num = as.numeric(ai_decision_approval_factor),
+    ai_trust_num = as.numeric(ai_trust_factor),
+    ai_regulation_importance_num = as.numeric(ai_regulation_importance_factor),
+    
+    # Comfort variables numeric
+    ai_comfort_healthcare_num = as.numeric(ai_comfort_healthcare_factor),
+    ai_comfort_finance_num = as.numeric(ai_comfort_finance_factor),
+    ai_comfort_criminal_justice_num = as.numeric(ai_comfort_criminal_justice_factor),
+    ai_comfort_hiring_num = as.numeric(ai_comfort_hiring_factor),
+    ai_comfort_education_num = as.numeric(ai_comfort_education_factor)
+  )
+```
+
+## Step 6: Process Multi-Select Variables
+
+```{r multiselect-processing}
+#| label: process-multiselect
+
+# Process AI tools used (Q3) - multi-select question
+df_clean <- df_clean %>% 
+  mutate(
+    # Create binary indicators for each tool type
+    uses_chatgpt = str_detect(ai_tools_used, "ChatGPT|Claude|conversational AI"),
+    uses_writing_assist = str_detect(ai_tools_used, "writing assistants"),
+    uses_image_gen = str_detect(ai_tools_used, "image generators"),
+    uses_code_assist = str_detect(ai_tools_used, "code assistants"),
+    uses_search = str_detect(ai_tools_used, "search or recommendations"),
+    uses_voice_assist = str_detect(ai_tools_used, "Voice assistants"),
+    uses_mobile_ai = str_detect(ai_tools_used, "mobile apps"),
+    
+    # Count total number of AI tools used
+    ai_tools_count = uses_chatgpt + uses_writing_assist + uses_image_gen + 
+                     uses_code_assist + uses_search + uses_voice_assist + uses_mobile_ai
+  )
+
+# Process AI concerns (Q13) - multi-select question
+# First, let's examine the unique concerns mentioned
+all_concerns <- df_clean$ai_concerns %>% 
+  str_split(",") %>% 
+  unlist() %>% 
+  str_trim() %>% 
+  unique() %>% 
+  na.omit()
+
+print("Unique AI concerns mentioned:")
+all_concerns
+
+# Create binary indicators for major concern categories
+df_clean <- df_clean %>% 
+  mutate(
+    concern_privacy = str_detect(ai_concerns, "Privacy|data security"),
+    concern_bias = str_detect(ai_concerns, "Bias|discrimination"),
+    concern_jobs = str_detect(ai_concerns, "Job displacement|unemployment"),
+    concern_misinformation = str_detect(ai_concerns, "Misinformation|deepfakes"),
+    concern_power = str_detect(ai_concerns, "too powerful"),
+    concern_transparency = str_detect(ai_concerns, "transparency"),
+    concern_human_skills = str_detect(ai_concerns, "human skills"),
+    
+    # Count total concerns
+    concern_count = concern_privacy + concern_bias + concern_jobs + 
+                   concern_misinformation + concern_power + concern_transparency + 
+                   concern_human_skills
+  )
+```
+
+## Step 7: Create Composite Scores
+
+```{r composite-scores}
+#| label: create-composites
+
+df_clean <- df_clean %>% 
+  mutate(
+    # Overall AI sentiment composite (average of key sentiment questions)
+    ai_sentiment_composite = rowMeans(
+      select(., ai_development_support_num, ai_workplace_approval_num,
+             ai_overall_sentiment_num, ai_recommend_num, 
+             ai_decision_approval_num, ai_trust_num),
+      na.rm = TRUE
+    ),
+    
+    # AI comfort composite (average across all application areas)
+    ai_comfort_composite = rowMeans(
+      select(., ai_comfort_healthcare_num, ai_comfort_finance_num,
+             ai_comfort_criminal_justice_num, ai_comfort_hiring_num,
+             ai_comfort_education_num),
+      na.rm = TRUE
+    ),
+    
+    # AI experience level (combination of familiarity and usage)
+    ai_experience_composite = rowMeans(
+      select(., ai_familiarity_num, ai_usage_frequency_num),
+      na.rm = TRUE
+    )
+  )
+
+# Verify composite scores
+df_clean %>% 
+  select(ai_sentiment_composite, ai_comfort_composite, ai_experience_composite) %>% 
+  summary()
+```
+
+## Step 8: Data Quality Flags
+
+```{r quality-flags}
+#| label: create-quality-flags
+
+df_clean <- df_clean %>% 
+  mutate(
+    # Flag responses that failed attention checks
+    passed_attention = (attention_check_1 == 1 & attention_check_2 == 1),
+    
+    # Flag suspiciously fast responses (less than 30 seconds)
+    too_fast = duration_in_seconds < 30,
+    
+    # Flag incomplete responses (high proportion of NAs)
+    na_count = rowSums(is.na(select(., starts_with("ai_")))),
+    high_missing = na_count > 5,
+    
+    # Create overall quality flag
+    quality_flag = case_when(
+      !passed_attention ~ "Failed attention check",
+      too_fast ~ "Too fast",
+      high_missing ~ "High missing data",
+      TRUE ~ "Good quality"
+    )
+  )
+
+# Quality summary
+df_clean %>% 
+  count(quality_flag) %>% 
+  mutate(percentage = n / sum(n) * 100) %>% 
+  kable(digits = 1, caption = "Data Quality Summary") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# Missing Data Analysis
+
+```{r missing-data}
+#| label: missing-data-analysis
+#| fig-height: 8
+#| fig-width: 10
+
+# Visualize missing data patterns
+vis_miss(df_clean %>% 
+         select(starts_with("ai_"), -ends_with("_num"), -ends_with("_factor")))
+
+# Summary of missing data by variable type
+missing_summary <- df_clean %>% 
+  select(starts_with("ai_"), -ends_with("_num"), -ends_with("_factor")) %>% 
+  miss_var_summary() %>% 
+  mutate(variable_type = case_when(
+    str_detect(variable, "comfort") ~ "Comfort questions",
+    str_detect(variable, "concern") ~ "Concerns",
+    str_detect(variable, "composite") ~ "Composite scores",
+    TRUE ~ "Main sentiment questions"
+  ))
+
+missing_summary %>% 
+  group_by(variable_type) %>% 
+  summarise(
+    avg_missing_pct = mean(pct_miss),
+    n_variables = n()
+  ) %>% 
+  kable(digits = 1, caption = "Missing Data by Variable Type") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# Final Dataset Preparation
+
+```{r final-dataset}
+#| label: prepare-final-dataset
+
+# Select variables for final analysis dataset
+df_analysis <- df_clean %>% 
+  # Filter to quality responses only
+  filter(quality_flag == "Good quality") %>% 
+  
+  # Select key variables
+  select(
+    # Identifiers
+    participant_id, submission_id,
+    
+    # Demographics
+    age_numeric, age_group, sex_clean, employment_clean, student_clean,
+    country_of_residence, nationality,
+    
+    # AI sentiment variables (factors and numeric)
+    starts_with("ai_"), 
+    
+    # Tool usage indicators
+    starts_with("uses_"), ai_tools_count,
+    
+    # Concern indicators
+    starts_with("concern_"), concern_count,
+    
+    # Composite scores
+    ends_with("_composite"),
+    
+    # Metadata
+    survey_date, duration_minutes
+  ) %>% 
+  
+  # Remove redundant columns
+  select(-c(ai_tools_used, ai_concerns, ai_benefits_outweigh_risks, 
+            ai_replaces_jobs, ai_future_role))
+
+# Save cleaned dataset
+write_csv(df_analysis, "ai_sentiment_clean.csv")
+
+# Final summary
+cat("Final dataset dimensions:", nrow(df_analysis), "rows x", ncol(df_analysis), "columns\n")
+cat("Participants after quality filtering:", n_distinct(df_analysis$participant_id), "\n")
+```
+
+# Data Dictionary
+
+```{r data-dictionary}
+#| label: create-data-dictionary
+
+# Create a data dictionary for key variables
+data_dict <- tribble(
+  ~Variable, ~Type, ~Description, ~Values,
+  "ai_sentiment_composite", "Numeric", "Composite score of overall AI sentiment", "1-5 (higher = more positive)",
+  "ai_comfort_composite", "Numeric", "Average comfort across AI applications", "1-5 (higher = more comfortable)",
+  "ai_experience_composite", "Numeric", "Combined familiarity and usage frequency", "1-5 (higher = more experienced)",
+  "ai_tools_count", "Numeric", "Number of different AI tools used", "0-7",
+  "concern_count", "Numeric", "Number of AI concerns selected", "0-7",
+  "age_group", "Character", "Age category", "18-25, 26-35, 36-45, 46-55, 56+",
+  "sex_clean", "Character", "Participant sex", "Male, Female",
+  "quality_flag", "Character", "Data quality indicator", "Good quality, Failed attention check, Too fast, High missing data"
+)
+
+data_dict %>% 
+  kable(caption = "Key Variables in Cleaned Dataset") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Summary
+
+This data preparation process has:
+
+1. **Cleaned column names** for consistency and clarity
+2. **Processed datetime variables** and created derived time features
+3. **Handled demographic variables** including missing data and invalid values
+4. **Converted ordinal responses** to both ordered factors and numeric scales
+5. **Processed multi-select questions** into binary indicators
+6. **Created composite scores** for overall sentiment, comfort, and experience
+7. **Implemented data quality checks** and filtered problematic responses
+8. **Prepared a final analysis dataset** with `r nrow(df_analysis)` quality responses
+
+The cleaned dataset is saved as `ai_sentiment_clean.csv` and is ready for statistical analysis and visualization.
+
+## Next Steps
+
+With the cleaned data, analysts can proceed to:
+
+- Conduct group comparisons (t-tests, ANOVA)
+- Perform correlation and regression analyses
+- Create visualizations of sentiment patterns
+- Build predictive models of AI acceptance
+- Examine relationships between concerns and overall sentiment
